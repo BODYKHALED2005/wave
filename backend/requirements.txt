@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+librosa
+numpy
+tensorflow
+python-multipart
+python-dotenv
+websockets

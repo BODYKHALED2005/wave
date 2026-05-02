@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1082572253045",
+    "project_id": "wave-ibrah-2026",
+    "storage_bucket": "wave-ibrah-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1082572253045:android:bcaf9e0dc1939fccf5553c",
+        "android_client_info": {
+          "package_name": "com.mohamedadel.wavemed.wavemed"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAEhciee59frbNIfNyL2y4HxN2-QJTJEMY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

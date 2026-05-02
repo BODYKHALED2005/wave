@@ -1,0 +1,22 @@
+{
+  "model_type": "Custom_CNN",
+  "input_shape": [
+    128,
+    157,
+    1
+  ],
+  "sample_rate": 16000,
+  "duration": 5.0,
+  "n_mels": 128,
+  "hop_length": 512,
+  "n_fft": 2048,
+  "recommended_threshold": 0.3,
+  "test_accuracy": 0.8557268977165222,
+  "test_recall": 0.7127272486686707,
+  "test_precision": 0.9592169523239136,
+  "test_auc": 0.9551326036453247,
+  "classes": {
+    "0": "normal",
+    "1": "wheeze"
+  }
+}

@@ -1,0 +1,12 @@
+# Monorepo root — complements nested app .gitignore files
+
+# Secrets
+.env
+**/.env
+
+# Python virtual environments (never commit)
+**/venv/
+
+# Python cache
+**/__pycache__/
+*.py[cod]
