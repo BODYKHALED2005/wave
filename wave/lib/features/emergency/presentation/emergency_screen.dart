@@ -6,6 +6,24 @@ import '../../../core/constants/app_colors.dart';
 import '../../app_state/app_state.dart';
 import '../../live_data/live_models.dart';
 
+String _emergencyBody(
+  AppLanguage language,
+  int? spo2,
+) {
+  if (spo2 != null) {
+    return tr(
+      language,
+      'Backend-confirmed wheeze with SpO2 $spo2%. Keep the child upright, continue observation, and contact emergency services if symptoms escalate.',
+      'تم تأكيد الأزيز من الخادم مع أكسجين $spo2٪. أبقِ الطفل بوضع مستقيم، واستمر بالملاحظة، واتصل بخدمات الطوارئ إذا تصاعدت الأعراض.',
+    );
+  }
+  return tr(
+    language,
+    'Backend-confirmed wheeze pattern; SpO2 was not reliably measured — place finger on sensor and reassess while keeping the child upright. Contact emergency services if symptoms escalate.',
+    'تأكيد أزيز من الخادم دون قراءة أكسجة موثوقة — ضع الإصبع على المحس وأعد القياس مع إبقاء الطفل مستقيماً. اتصل بخدمات الطوارئ إذا تصاعدت الأعراض.',
+  );
+}
+
 class EmergencyScreen extends ConsumerWidget {
   const EmergencyScreen({super.key});
 
@@ -66,11 +84,7 @@ class EmergencyScreen extends ConsumerWidget {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      tr(
-                        language,
-                        'Backend-confirmed wheeze with SpO2 ${state.frame.vitals.spo2}%. Keep the child upright, continue observation, and contact emergency services if symptoms escalate.',
-                        'تم تأكيد الأزيز من الخادم مع أكسجين ${state.frame.vitals.spo2}٪. أبقِ الطفل بوضع مستقيم، واستمر بالملاحظة، واتصل بخدمات الطوارئ إذا تصاعدت الأعراض.',
-                      ),
+                      _emergencyBody(language, state.frame.vitals.spo2),
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 16,

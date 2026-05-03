@@ -210,18 +210,25 @@ class HomeScreen extends ConsumerWidget {
                       Expanded(
                         child: VitalTile(
                           label: 'SpO2',
-                          value: '${data.frame.vitals.spo2}%',
+                          value: data.frame.vitals.spo2 != null
+                              ? '${data.frame.vitals.spo2}%'
+                              : tr(language, '--', '--'),
                           icon: Icons.bubble_chart,
-                          tone: data.frame.vitals.spo2 >= 96
+                          tone: data.frame.vitals.spo2 != null &&
+                                  data.frame.vitals.spo2! >= 96
                               ? AppColors.success
-                              : AppColors.warning,
+                              : data.frame.vitals.spo2 != null
+                                  ? AppColors.warning
+                                  : AppColors.textMuted,
                         ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: VitalTile(
                           label: 'BPM',
-                          value: '${data.frame.vitals.bpm}',
+                          value: data.frame.vitals.bpm != null
+                              ? '${data.frame.vitals.bpm}'
+                              : tr(language, '--', '--'),
                           icon: Icons.favorite_border,
                           tone: AppColors.primary,
                         ),

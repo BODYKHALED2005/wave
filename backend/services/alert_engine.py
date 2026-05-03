@@ -3,15 +3,17 @@ from db.database import Alert, ScanEvent
 
 ALERT_COOLDOWN_SECONDS = 180
 
-def derive_severity(confidence: float, spo2: int):
-    if confidence >= 0.30 and spo2 < 94:
+def derive_severity_from_scan(scan: ScanEvent) -> str:
+    """Use stored label (same threshold as model_service) so alerts match UI."""
+    if scan.label != "wheeze":
+        return "normal"
+    if scan.spo2 is not None and scan.spo2 < 94:
         return "emergency"
-    if confidence >= 0.30:
-        return "wheeze"
-    return "normal"
+    return "wheeze"
+
 
 def process_scan_for_alerts(db, scan: ScanEvent):
-    severity = derive_severity(scan.confidence, scan.spo2)
+    severity = derive_severity_from_scan(scan)
     
     if severity == "normal":
         return None

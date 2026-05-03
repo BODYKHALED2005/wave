@@ -108,8 +108,14 @@ class AlertDetailScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  SummaryBullet(text: 'SpO2: ${data.vitals.spo2}%'),
-                  SummaryBullet(text: 'BPM: ${data.vitals.bpm}'),
+                  SummaryBullet(
+                    text:
+                        'SpO2: ${data.vitals.spo2 != null ? '${data.vitals.spo2}%' : tr(language, 'unavailable', 'غير متاح')}',
+                  ),
+                  SummaryBullet(
+                    text:
+                        'BPM: ${data.vitals.bpm ?? tr(language, 'unavailable', 'غير متاح')}',
+                  ),
                   SummaryBullet(
                     text:
                         '${tr(language, 'Temperature', 'الحرارة')}: ${data.vitals.temperatureC.toStringAsFixed(1)}°C',

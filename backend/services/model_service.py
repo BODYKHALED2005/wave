@@ -17,6 +17,8 @@ class ModelService:
     def __init__(self):
         settings = get_settings()
         self.model_path = settings.model_path
+        self._wheeze_threshold = settings.wheeze_alert_threshold
+        self._audio_min_rms = settings.audio_min_rms
         self.model = None
         
         if os.path.exists(self.model_path):
@@ -32,7 +34,12 @@ class ModelService:
         target_length = int(DURATION * sr)
 
         if len(audio) < target_length:
-            audio = np.pad(audio, (0, target_length - len(audio)), mode='constant')
+            # Repeat short captures (e.g. 2s fallback) instead of zero-padding.
+            if len(audio) == 0:
+                audio = np.zeros(target_length, dtype=np.float32)
+            else:
+                repeats = int(np.ceil(target_length / len(audio)))
+                audio = np.tile(audio, repeats)[:target_length]
         else:
             audio = audio[:target_length]
 
@@ -52,11 +59,44 @@ class ModelService:
 
         return mel_spec_db
 
-    def predict(self, audio_base64: str, sample_rate: int = 16000):
+    def _preprocess_audio(self, audio: np.ndarray) -> np.ndarray:
+        # Remove DC offset and avoid clipping.
+        audio = audio - float(np.mean(audio))
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if peak > 1e-8:
+            audio = np.clip(audio / peak * 0.95, -1.0, 1.0)
+        return audio.astype(np.float32)
+
+    def _predict_confidence(self, audio: np.ndarray) -> float:
+        mel_spec = self.extract_mel_spectrogram(audio, SAMPLE_RATE)
+        mel_spec = np.expand_dims(mel_spec, axis=-1)
+        mel_spec = np.expand_dims(mel_spec, axis=0)
+        prediction = self.model.predict(mel_spec, verbose=0)
+        return float(prediction[0][0])
+
+    def _robust_score(self, confidences: list[float]) -> float:
+        """Combine peak and consistency to better catch short wheeze events."""
+        if not confidences:
+            return 0.0
+        vals = sorted(confidences, reverse=True)
+        max_c = vals[0]
+        top2_mean = float(np.mean(vals[:2])) if len(vals) >= 2 else max_c
+        mean_c = float(np.mean(vals))
+        # Weighted score: prioritize peaks but keep consistency signal.
+        return (0.55 * max_c) + (0.30 * top2_mean) + (0.15 * mean_c)
+
+    def predict(self, audio_base64: str, sample_rate: int = 16000, duration_sec: float = 5.0):
+        thr = self._wheeze_threshold
+
         if self.model is None:
-            # Mock mode
-            return {"confidence": 0.5, "is_wheeze": True, "label": "wheeze"}
-            
+            # Conservative mock: avoid false positives when weights are missing.
+            return {
+                "confidence": 0.0,
+                "is_wheeze": False,
+                "label": "normal",
+                "threshold": thr,
+            }
+
         try:
             # Firmware may send WAV bytes or raw PCM16 samples.
             audio, sr = self._decode_audio(audio_base64, sample_rate)
@@ -64,23 +104,55 @@ class ModelService:
             # Resample if needed
             if sr != SAMPLE_RATE:
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
+
+            # Gate silence/noise before normalization.
+            rms = float(np.sqrt(np.mean(np.square(audio))))
+            if rms < self._audio_min_rms:
+                return {
+                    "confidence": 0.0,
+                    "is_wheeze": False,
+                    "label": "normal",
+                    "threshold": thr,
+                }
+
+            # ESP32 PCM can vary heavily in amplitude; normalize per scan.
+            audio = self._preprocess_audio(audio)
             
-            mel_spec = self.extract_mel_spectrogram(audio, SAMPLE_RATE)
-            # reshape for model: (1, 128, 157, 1)
-            mel_spec = np.expand_dims(mel_spec, axis=-1)
-            mel_spec = np.expand_dims(mel_spec, axis=0)
-            
-            prediction = self.model.predict(mel_spec)
-            confidence = float(prediction[0][0])
-            
+            target_len = int(DURATION * SAMPLE_RATE)
+            confidences = [self._predict_confidence(audio)]
+
+            # Improve wheeze sensitivity: evaluate multiple windows and keep max score.
+            # Wheeze can appear in only part of the captured segment.
+            if len(audio) > target_len:
+                mid = len(audio) // 2
+                half = target_len // 2
+                start_mid = max(0, min(len(audio) - target_len, mid - half))
+                window_mid = audio[start_mid : start_mid + target_len]
+                window_end = audio[-target_len:]
+                confidences.append(self._predict_confidence(window_mid))
+                confidences.append(self._predict_confidence(window_end))
+
+            max_confidence = max(confidences)
+            confidence = self._robust_score(confidences)
+
             return {
                 "confidence": confidence,
-                "is_wheeze": confidence >= 0.30,
-                "label": "wheeze" if confidence >= 0.30 else "normal"
+                "is_wheeze": confidence >= thr,
+                "label": "wheeze" if confidence >= thr else "normal",
+                "threshold": thr,
+                "rms": rms,
+                "duration_sec": duration_sec,
+                "window_confidences": confidences,
+                "peak_confidence": max_confidence,
             }
         except Exception as e:
             print(f"Error in prediction: {e}")
-            return {"confidence": 0.0, "is_wheeze": False, "label": "normal"}
+            return {
+                "confidence": 0.0,
+                "is_wheeze": False,
+                "label": "normal",
+                "threshold": thr,
+            }
 
     def _decode_audio(self, audio_base64: str, sample_rate: int):
         audio_bytes = base64.b64decode(audio_base64)

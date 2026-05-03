@@ -47,6 +47,14 @@ TwoWire I2C_MLX = TwoWire(1);  // MLX90614 on SDA=1, SCL=2
 MAX30105             particleSensor;
 Adafruit_MLX90614   mlx = Adafruit_MLX90614();
 
+/** IR average threshold: without a finger readings are usually much lower — tune via Serial Monitor. */
+constexpr uint32_t MAX30102_IR_FINGER_MIN = 45000UL;
+/** خوارزمية Maxim أحيانًا تعطي SpO2 بين 70–100 قبل الاستقرار؛ 85 كانت صارمة جدًا. */
+constexpr int32_t SPO2_MIN_ACCEPT = 70;
+constexpr int32_t SPO2_MAX_ACCEPT = 100;
+constexpr int32_t BPM_MIN_ACCEPT  = 40;
+constexpr int32_t BPM_MAX_ACCEPT  = 220;
+
 // ─── SpO2 buffers ─────────────────────────────────────────────────────────────
 uint32_t irBuffer[100];
 uint32_t redBuffer[100];
@@ -57,6 +65,10 @@ int8_t   validSPO2, validHR;
 int16_t* audioBuffer = nullptr;
 int recordingDurationS = DURATION_S;
 size_t recordingSamples = TOTAL_SAMPLES;
+
+static bool g_max30102Ready = false;
+static int32_t g_lastGoodBpm = 0;
+static int32_t g_lastGoodSpo2 = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 String currentUtcIso8601() {
@@ -130,8 +142,10 @@ void setup() {
   I2C_MAX.begin(4, 5, 400000);
   if (particleSensor.begin(I2C_MAX, I2C_SPEED_FAST)) {
     particleSensor.setup(60, 4, 2, 100, 411, 4096);
+    g_max30102Ready = true;
     Serial.println("✅ MAX30102 Ready");
   } else {
+    g_max30102Ready = false;
     Serial.println("❌ MAX30102 مش لاقيه!");
   }
 
@@ -178,20 +192,108 @@ void loop() {
   Serial.printf("🌡️  درجة الحرارة: %.1f°C\n", temp);
 
   // 2. قراءة النبض والأكسجين
-  Serial.println("💓 بقيس النبض... خليك ثابت 10 ثواني");
-  for (byte i = 0; i < 100; i++) {
-    while (particleSensor.available() == false) particleSensor.check();
-    redBuffer[i] = particleSensor.getRed();
-    irBuffer[i]  = particleSensor.getIR();
-    particleSensor.nextSample();
+  int32_t  spo2ValLocal = 0;
+  int32_t  heartRateValLocal = 0;
+  int8_t   validSPO2Local = 0;
+  int8_t   validHRLocal = 0;
+  uint32_t irAvg = 0;
+
+  if (!g_max30102Ready) {
+    Serial.println("⚠️ تخطّي نبض/SpO2 — MAX30102 غير مهيأ.");
+    validHR = 0;
+    validSPO2 = 0;
+    heartRateVal = 0;
+    spo2Val = 0;
+  } else {
+    Serial.println("💓 بقيس النبض... ثبّت الإصبع 10–15 ثانية على الحساس.");
+    // تسخين: عيّنات أولى ترمى حتى يستقر الفلتر والـ LED
+    for (word w = 0; w < 120; w++) {
+      while (particleSensor.available() == false) {
+        particleSensor.check();
+      }
+      particleSensor.nextSample();
+    }
+
+    for (byte attempt = 0; attempt < 2; attempt++) {
+      for (byte i = 0; i < 100; i++) {
+        while (particleSensor.available() == false) {
+          particleSensor.check();
+        }
+        redBuffer[i] = particleSensor.getRed();
+        irBuffer[i]  = particleSensor.getIR();
+        particleSensor.nextSample();
+      }
+      maxim_heart_rate_and_oxygen_saturation(
+        irBuffer, 100, redBuffer,
+        &spo2ValLocal, &validSPO2Local, &heartRateValLocal, &validHRLocal
+      );
+      if (validHRLocal && validSPO2Local) {
+        break;
+      }
+      delay(150);
+    }
+
+    uint64_t irSum = 0;
+    for (byte i = 0; i < 100; i++) {
+      irSum += irBuffer[i];
+    }
+    irAvg = (uint32_t)(irSum / 100UL);
+
+    validHR = validHRLocal;
+    validSPO2 = validSPO2Local;
+    heartRateVal = heartRateValLocal;
+    spo2Val = spo2ValLocal;
   }
-  maxim_heart_rate_and_oxygen_saturation(
-    irBuffer, 100, redBuffer,
-    &spo2Val, &validSPO2, &heartRateVal, &validHR
-  );
-  int bpm  = (validHR   && heartRateVal > 20) ? (int)heartRateVal : 75;
-  int spo2 = (validSPO2 && spo2Val > 50)      ? (int)spo2Val     : 98;
-  Serial.printf("💓 BPM: %d  |  🫁 SpO2: %d%%\n", bpm, spo2);
+
+  bool fingerPresent = g_max30102Ready && irAvg >= MAX30102_IR_FINGER_MIN;
+  // validHR/validSPO2 flags from Maxim can flap on noisy contacts.
+  bool hrInRange = heartRateVal >= BPM_MIN_ACCEPT && heartRateVal <= BPM_MAX_ACCEPT;
+  bool spo2InRange = spo2Val >= SPO2_MIN_ACCEPT && spo2Val <= SPO2_MAX_ACCEPT;
+  bool hrOk = fingerPresent && hrInRange;
+  bool spo2Ok = fingerPresent && spo2InRange;
+
+  if (hrOk) g_lastGoodBpm = heartRateVal;
+  if (spo2Ok) g_lastGoodSpo2 = spo2Val;
+
+  int32_t bpmToSend = hrOk ? heartRateVal : (g_lastGoodBpm > 0 ? g_lastGoodBpm : 0);
+  int32_t spo2ToSend = spo2Ok ? spo2Val : (g_lastGoodSpo2 > 0 ? g_lastGoodSpo2 : 0);
+  bool bpmHasValue = bpmToSend > 0;
+  bool spo2HasValue = spo2ToSend > 0;
+
+  if (g_max30102Ready) {
+    Serial.printf("MAX30102 IR avg: %lu (finger if >= %lu)\n",
+                  (unsigned long)irAvg,
+                  (unsigned long)MAX30102_IR_FINGER_MIN);
+    Serial.printf(
+        "MAX30102 raw: validHR=%d BPM=%ld | validSpO2=%d SpO2=%ld\n",
+        (int)validHR,
+        (long)heartRateVal,
+        (int)validSPO2,
+        (long)spo2Val);
+  }
+  if (!fingerPresent || !hrOk || !spo2Ok) {
+    Serial.println(
+        "⚠️ لا قراءة نبض/أكسجة موثوقة — ضَع الإصبع على المحس بحيث يغطي "
+        "الLEDين وانتظر الثبات.");
+    if (bpmHasValue) {
+      Serial.printf("💓 BPM: %ld%s\n",
+                    (long)bpmToSend,
+                    hrOk ? "" : " (last valid)");
+    } else {
+      Serial.println("💓 BPM: ---");
+    }
+    if (spo2HasValue) {
+      Serial.printf("🫁 SpO2: %ld%%%s\n",
+                    (long)spo2ToSend,
+                    spo2Ok ? "" : " (last valid)");
+    } else {
+      Serial.println("🫁 SpO2: ---");
+    }
+  } else {
+    Serial.printf("💓 BPM: %ld  |  🫁 SpO2: %ld%%\n",
+                  (long)heartRateVal,
+                  (long)spo2Val);
+  }
 
   // 3. تسجيل الصوت
   Serial.printf("🎤 تسجيل الصوت %d ثانية...\n", recordingDurationS);
@@ -225,53 +327,133 @@ void loop() {
   }
 
   size_t writtenLen = 0;
-  mbedtls_base64_encode(encoded, encodedSize, &writtenLen, (const uint8_t*)audioBuffer, rawSize);
+  int b64rc = mbedtls_base64_encode(
+      encoded, encodedSize, &writtenLen, (const uint8_t*)audioBuffer, rawSize);
+  if (b64rc != 0 || writtenLen < 2048) {
+    Serial.printf("❌ فشل Base64 (rc=%d, len=%u) — تخطي الإرسال.\n",
+                  b64rc,
+                  (unsigned)writtenLen);
+    free(encoded);
+    delay(5000);
+    return;
+  }
   encoded[writtenLen] = '\0';
-  Serial.printf("✅ حجم الصوت المشفر: %d حرف\n", writtenLen);
+  Serial.printf("✅ حجم الصوت المشفر: %u حرف\n", (unsigned)writtenLen);
 
   // 5. إرسال للـ Backend
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("📡 بعت للـ Backend...");
 
-    HTTPClient http;
-    http.begin(String(BACKEND_URL) + "/api/v1/device-scan");
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(60000); // 60 ثانية للـ inference
+    // نبني Header/Prefix فقط، ونبعت Base64 stream مباشرة لتجنب تخصيص payload كبير.
+    const String spo2Field = spo2HasValue ? String((int)spo2ToSend) : String("null");
+    const String bpmField  = bpmHasValue ? String((int)bpmToSend) : String("null");
+    const String prefix =
+        String("{\"device_id\":\"") + DEVICE_ID +
+        "\",\"child_id\":\"" + CHILD_ID +
+        "\",\"captured_at\":\"" + currentUtcIso8601() +
+        "\",\"spo2\":" + spo2Field +
+        ",\"bpm\":" + bpmField +
+        ",\"temperature_c\":" + String(temp, 2) +
+        ",\"humidity\":50,\"battery\":90,\"aqi\":0,\"sample_rate\":" + String(SAMPLE_RATE) +
+        ",\"duration_sec\":" + String(recordingDurationS) +
+        ",\"audio_base64\":\"";
+    const String suffix = "\"}";
 
-    // ابني JSON يدويًا لتفادي تحويل audio_base64 إلى null تحت ضغط الذاكرة.
-    String body;
-    body.reserve(writtenLen + 512);
-    body += "{\"device_id\":\"";
-    body += DEVICE_ID;
-    body += "\",\"child_id\":\"";
-    body += CHILD_ID;
-    body += "\",\"captured_at\":\"";
-    body += currentUtcIso8601();
-    body += "\",\"spo2\":";
-    body += String(spo2);
-    body += ",\"bpm\":";
-    body += String(bpm);
-    body += ",\"temperature_c\":";
-    body += String(temp, 2);
-    body += ",\"humidity\":50,\"battery\":90,\"aqi\":0,\"sample_rate\":";
-    body += String(SAMPLE_RATE);
-    body += ",\"duration_sec\":";
-    body += String(recordingDurationS);
-    body += ",\"audio_base64\":\"";
-    body += (char*)encoded;
-    body += "\"}";
-    free(encoded);
+    const size_t payloadLen = prefix.length() + writtenLen + suffix.length();
+    Serial.printf("📦 JSON size: %u bytes\n", (unsigned)payloadLen);
 
-    int code = http.POST(body);
-    body = "";
-
-    if (code > 0) {
-      String resp = http.getString();
-      Serial.printf("✅ رد السيرفر (%d): %s\n", code, resp.c_str());
-    } else {
-      Serial.printf("❌ خطأ HTTP: %s\n", http.errorToString(code).c_str());
+    // Parse BACKEND_URL => host, port
+    String hostPort = String(BACKEND_URL);
+    if (!hostPort.startsWith("http://")) {
+      Serial.println("❌ BACKEND_URL لازم يبدأ بـ http://");
+      free(encoded);
+      delay(5000);
+      return;
     }
-    http.end();
+    hostPort.remove(0, 7); // remove http://
+    int slashPos = hostPort.indexOf('/');
+    if (slashPos >= 0) {
+      hostPort = hostPort.substring(0, slashPos);
+    }
+    String host = hostPort;
+    uint16_t port = 80;
+    int colonPos = hostPort.indexOf(':');
+    if (colonPos >= 0) {
+      host = hostPort.substring(0, colonPos);
+      port = (uint16_t)hostPort.substring(colonPos + 1).toInt();
+      if (port == 0) port = 80;
+    }
+
+    bool requestOk = false;
+    for (int attempt = 1; attempt <= 3 && !requestOk; attempt++) {
+      WiFiClient client;
+      client.setTimeout(12);
+
+      if (!client.connect(host.c_str(), port)) {
+        Serial.printf("❌ محاولة %d: فشل الاتصال بالـ Backend (TCP).\n", attempt);
+        delay(200);
+        continue;
+      }
+
+      // HTTP request headers
+      client.print("POST /api/v1/device-scan HTTP/1.1\r\n");
+      client.print("Host: " + host + "\r\n");
+      client.print("Content-Type: application/json\r\n");
+      client.print("Connection: close\r\n");
+      client.print("Content-Length: ");
+      client.print((unsigned)payloadLen);
+      client.print("\r\n\r\n");
+
+      // Stream body in parts (prefix + base64 + suffix)
+      client.print(prefix);
+      size_t sent = 0;
+      while (sent < writtenLen) {
+        size_t chunk = writtenLen - sent;
+        if (chunk > 1024) chunk = 1024;
+        size_t w = client.write(encoded + sent, chunk);
+        if (w == 0) break;
+        sent += w;
+        delay(1); // avoids bursts that may drop Wi-Fi socket writes
+      }
+      client.print(suffix);
+
+      if (sent != writtenLen) {
+        Serial.printf("❌ محاولة %d: انقطاع أثناء إرسال audio_base64 (%u/%u).\n",
+                      attempt,
+                      (unsigned)sent,
+                      (unsigned)writtenLen);
+        client.stop();
+        delay(200);
+        continue;
+      }
+
+      // Read status line
+      unsigned long t0 = millis();
+      while (!client.available() && millis() - t0 < 12000) {
+        delay(10);
+      }
+      if (!client.available()) {
+        Serial.printf("❌ محاولة %d: لا يوجد رد من السيرفر (timeout).\n", attempt);
+        client.stop();
+        delay(200);
+        continue;
+      }
+      String statusLine = client.readStringUntil('\n');
+      statusLine.trim();
+      if (statusLine.indexOf("200") >= 0) {
+        Serial.printf("✅ رد السيرفر: %s\n", statusLine.c_str());
+        requestOk = true;
+      } else {
+        Serial.printf("❌ محاولة %d: رد السيرفر: %s\n", attempt, statusLine.c_str());
+      }
+      client.stop();
+    }
+
+    free(encoded);
+    if (!requestOk) {
+      delay(5000);
+      return;
+    }
   } else {
     free(encoded);
     Serial.println("❌ WiFi مش متصل!");

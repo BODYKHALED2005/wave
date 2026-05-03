@@ -14,13 +14,32 @@ def get_latest_scan(child_id: str, db: Session = Depends(get_db)):
     scan = db.query(ScanEvent).filter(ScanEvent.child_id == child_id).order_by(ScanEvent.captured_at.desc()).first()
     if not scan:
         return {"child_id": child_id, "captured_at": None, "spo2": 0, "bpm": 0, "temperature_c": 0, "battery": 0, "humidity": 0, "aqi": 0, "backend_prediction": {"label": "normal", "confidence": 0, "threshold": 0.3}}
+
+    fallback_spo2 = scan.spo2
+    fallback_bpm = scan.bpm
+    if fallback_spo2 is None:
+        last_with_spo2 = (
+            db.query(ScanEvent)
+            .filter(ScanEvent.child_id == child_id, ScanEvent.spo2.isnot(None))
+            .order_by(ScanEvent.captured_at.desc())
+            .first()
+        )
+        fallback_spo2 = last_with_spo2.spo2 if last_with_spo2 else 0
+    if fallback_bpm is None:
+        last_with_bpm = (
+            db.query(ScanEvent)
+            .filter(ScanEvent.child_id == child_id, ScanEvent.bpm.isnot(None))
+            .order_by(ScanEvent.captured_at.desc())
+            .first()
+        )
+        fallback_bpm = last_with_bpm.bpm if last_with_bpm else 0
         
     return {
         "child_id": child_id,
         "device_id": scan.device_id,
         "captured_at": scan.captured_at.isoformat() + "Z",
-        "spo2": scan.spo2,
-        "bpm": scan.bpm,
+        "spo2": fallback_spo2,
+        "bpm": fallback_bpm,
         "temperature_c": scan.temperature_c,
         "battery": scan.battery,
         "humidity": scan.humidity,

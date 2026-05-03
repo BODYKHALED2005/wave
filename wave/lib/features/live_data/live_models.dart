@@ -42,25 +42,35 @@ class ChildSummary {
 @immutable
 class LiveVitals {
   const LiveVitals({
-    required this.spo2,
-    required this.bpm,
+    this.spo2,
+    this.bpm,
     required this.temperatureC,
     required this.battery,
     required this.humidity,
     required this.aqi,
   });
 
-  final int spo2;
-  final int bpm;
+  final int? spo2;
+  final int? bpm;
   final double temperatureC;
   final int battery;
   final int humidity;
   final int aqi;
 
   factory LiveVitals.fromJson(Map<String, dynamic> json) {
+    int? nullableInt(dynamic v) {
+      if (v == null) {
+        return null;
+      }
+      if (v is num) {
+        return v.round();
+      }
+      return null;
+    }
+
     return LiveVitals(
-      spo2: (json['spo2'] as num?)?.round() ?? 0,
-      bpm: (json['bpm'] as num?)?.round() ?? 0,
+      spo2: nullableInt(json['spo2']),
+      bpm: nullableInt(json['bpm']),
       temperatureC: (json['temperature_c'] as num?)?.toDouble() ?? 0,
       battery: (json['battery'] as num?)?.round() ?? 0,
       humidity: (json['humidity'] as num?)?.round() ?? 0,
@@ -132,7 +142,7 @@ class ComparisonResult {
       backend: backend,
       device: device,
       derivedSeverity: deriveSeverity(
-        backendConfidence: backend.confidence,
+        backendLabel: backend.label,
         spo2: vitals.spo2,
       ),
       isMismatch: _isMismatch(backend, device),
@@ -282,7 +292,7 @@ class AlertEvent {
     final AlertSeverity severity = _severityFromRaw(
       (json['severity'] as String?)?.toLowerCase(),
       fallback: deriveSeverity(
-        backendConfidence: backend.confidence,
+        backendLabel: backend.label,
         spo2: vitals.spo2,
       ),
     );
@@ -431,16 +441,16 @@ class ChildSessionState {
 }
 
 AlertSeverity deriveSeverity({
-  required double backendConfidence,
-  required int spo2,
+  required PredictionLabel backendLabel,
+  required int? spo2,
 }) {
-  if (backendConfidence >= 0.30 && spo2 < 94) {
+  if (backendLabel != PredictionLabel.wheeze) {
+    return AlertSeverity.normal;
+  }
+  if (spo2 != null && spo2 < 94) {
     return AlertSeverity.emergency;
   }
-  if (backendConfidence >= 0.30) {
-    return AlertSeverity.wheeze;
-  }
-  return AlertSeverity.normal;
+  return AlertSeverity.wheeze;
 }
 
 PredictionResult? _predictionFromOptional(
